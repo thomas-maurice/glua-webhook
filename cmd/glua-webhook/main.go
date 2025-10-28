@@ -19,9 +19,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "glua-runner",
+	Use:   "glua-webhook",
 	Short: "Run Lua scripts as Kubernetes admission webhooks",
-	Long: `glua-runner executes Lua scripts as Kubernetes admission webhooks.
+	Long: `glua-webhook executes Lua scripts as Kubernetes admission webhooks.
 
 The primary use case is running as a webhook server that processes admission
 requests from the Kubernetes API server. Scripts are stored in ConfigMaps and
@@ -44,15 +44,15 @@ deploying them as webhooks. Use it to:
 The script receives the object as a global 'object' variable and can modify
 it in place. The modified object is printed to stdout.`,
 	Example: `  # Test script on existing Pod
-  kubectl get pod nginx -o json | glua-runner exec --script add-label.lua
+  kubectl get pod nginx -o json | glua-webhook exec --script add-label.lua
 
   # Test script on file
-  glua-runner exec --script inject-sidecar.lua --input pod.json --output modified.json
+  glua-webhook exec --script inject-sidecar.lua --input pod.json --output modified.json
 
   # Test multiple scripts in sequence (simulating webhook chaining)
   kubectl get pod nginx -o json | \
-    glua-runner exec --script add-labels.lua | \
-    glua-runner exec --script inject-sidecar.lua`,
+    glua-webhook exec --script add-labels.lua | \
+    glua-webhook exec --script inject-sidecar.lua`,
 	Run: runExec,
 }
 
@@ -68,7 +68,7 @@ and returns modified or validated resources.
 Scripts are referenced via the 'glua.maurice.fr/scripts' annotation on
 resources, pointing to ConfigMaps containing Lua code.`,
 	Example: `  # Run webhook server
-  glua-runner webhook --port 8443 --cert /certs/tls.crt --key /certs/tls.key`,
+  glua-webhook webhook --port 8443 --cert /certs/tls.crt --key /certs/tls.key`,
 	Run: runWebhook,
 }
 
@@ -119,7 +119,7 @@ func main() {
 
 func runExec(cmd *cobra.Command, args []string) {
 	// Set up logger
-	logger := log.New(os.Stderr, "[glua-runner] ", log.LstdFlags)
+	logger := log.New(os.Stderr, "[glua-webhook] ", log.LstdFlags)
 	if !execVerbose {
 		logger.SetOutput(io.Discard)
 	}
@@ -185,7 +185,7 @@ func runExec(cmd *cobra.Command, args []string) {
 func runWebhook(cmd *cobra.Command, args []string) {
 	// Set up logging
 	logger := log.New(os.Stdout, "[glua-webhook] ", log.LstdFlags|log.Lshortfile)
-	logger.Printf("Starting glua-runner in webhook mode")
+	logger.Printf("Starting glua-webhook in webhook mode")
 	logger.Printf("Mutating webhook path: %s", webhookMutatingPath)
 	logger.Printf("Validating webhook path: %s", webhookValidatingPath)
 	logger.Printf("Server port: %d", webhookPort)

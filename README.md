@@ -895,11 +895,20 @@ kubectl get --raw /metrics | grep webhook_admission_duration
 
 ## Documentation
 
+### Getting Started
+
 - **[Installation Guide](docs/getting-started/installation.md)** - Detailed installation steps
+- **[Deployment Label Propagation Guide](docs/guides/deployment-label-propagation.md)** - Step-by-step: Propagate labels from Deployments to Pods with automatic modification
+
+### Writing Scripts
+
 - **[Writing Lua Scripts](docs/guides/writing-scripts.md)** - Comprehensive scripting guide
 - **[Type Stubs & IDE Setup](docs/guides/type-stubs.md)** - Enable autocompletion for K8s types
-- **[Annotations Reference](docs/reference/annotations.md)** - Complete annotation documentation
 - **[Examples](examples/)** - Real, tested example scripts
+
+### Reference
+
+- **[Annotations Reference](docs/reference/annotations.md)** - Complete annotation documentation
 
 ## Contributing
 

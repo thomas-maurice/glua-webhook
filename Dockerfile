@@ -15,7 +15,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o glua-runner ./cmd/glua-runner
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o glua-webhook ./cmd/glua-webhook
 
 # Runtime stage
 FROM alpine:latest
@@ -31,7 +31,7 @@ RUN addgroup -g 1000 webhook && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /build/glua-runner /app/glua-runner
+COPY --from=builder /build/glua-webhook /app/glua-webhook
 
 # Set ownership
 RUN chown -R webhook:webhook /app
@@ -43,4 +43,4 @@ USER webhook
 EXPOSE 8443
 
 # Run the webhook
-ENTRYPOINT ["/app/glua-runner", "webhook"]
+ENTRYPOINT ["/app/glua-webhook", "webhook"]
