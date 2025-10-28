@@ -1,14 +1,13 @@
--- validate-labels.lua: Validates that required labels are present
--- This script demonstrates validation logic
+-- validate-labels.lua: Validates required labels are present
 
 local required_labels = {"app", "env"}
 
-if object.metadata == nil or object.metadata.labels == nil then
+if not object.metadata or not object.metadata.labels then
 	error("Resource must have labels")
 end
 
 for _, label in ipairs(required_labels) do
-	if object.metadata.labels[label] == nil or object.metadata.labels[label] == "" then
+	if not object.metadata.labels[label] or object.metadata.labels[label] == "" then
 		error("Required label '" .. label .. "' is missing")
 	end
 end

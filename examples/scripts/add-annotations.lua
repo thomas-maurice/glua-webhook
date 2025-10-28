@@ -1,18 +1,11 @@
--- add-annotations.lua: Adds annotations with JSON encoding
--- This script demonstrates using glua modules (json, time)
+-- add-annotations.lua: Adds mutation metadata using glua modules
 
 local json = require("json")
 local time = require("time")
 
-if object.metadata == nil then
-	object.metadata = {}
-end
+object.metadata = object.metadata or {}
+object.metadata.annotations = object.metadata.annotations or {}
 
-if object.metadata.annotations == nil then
-	object.metadata.annotations = {}
-end
-
--- Add metadata about the mutation
 local mutation_info = {
 	mutated_by = "glua-webhook",
 	mutation_time = time.now(),

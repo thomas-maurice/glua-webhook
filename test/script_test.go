@@ -4,49 +4,10 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"thechat/pkg/luarunner"
 )
-
-// testLuaScript: helper function to test a Lua script against test data
-func testLuaScript(t *testing.T, scriptPath string, inputObj, expectedObj map[string]interface{}) {
-	logger := log.New(os.Stdout, "[script-test] ", log.LstdFlags)
-	runner := luarunner.NewScriptRunner(logger)
-
-	// Read the script
-	scriptContent, err := os.ReadFile(scriptPath)
-	if err != nil {
-		t.Fatalf("Failed to read script %s: %v", scriptPath, err)
-	}
-
-	// Marshal input to JSON
-	inputJSON, err := json.Marshal(inputObj)
-	if err != nil {
-		t.Fatalf("Failed to marshal input: %v", err)
-	}
-
-	// Run the script
-	resultJSON, err := runner.RunScript(filepath.Base(scriptPath), string(scriptContent), inputJSON)
-	if err != nil {
-		t.Fatalf("Script execution failed: %v", err)
-	}
-
-	// Unmarshal result
-	var resultObj map[string]interface{}
-	if err := json.Unmarshal(resultJSON, &resultObj); err != nil {
-		t.Fatalf("Failed to unmarshal result: %v", err)
-	}
-
-	// Compare with expected (simple comparison)
-	resultJSON2, _ := json.Marshal(resultObj)
-	expectedJSON, _ := json.Marshal(expectedObj)
-
-	if string(resultJSON2) != string(expectedJSON) {
-		t.Errorf("Result mismatch.\nExpected: %s\nGot: %s", string(expectedJSON), string(resultJSON2))
-	}
-}
 
 func TestAddLabelScript(t *testing.T) {
 	scriptPath := "../examples/scripts/add-label.lua"
@@ -75,7 +36,9 @@ func TestAddLabelScript(t *testing.T) {
 	}
 
 	var resultObj map[string]interface{}
-	json.Unmarshal(resultJSON, &resultObj)
+	if err := json.Unmarshal(resultJSON, &resultObj); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
 
 	// Verify labels were added
 	metadata := resultObj["metadata"].(map[string]interface{})
@@ -124,7 +87,9 @@ func TestInjectSidecarScript(t *testing.T) {
 	}
 
 	var resultObj map[string]interface{}
-	json.Unmarshal(resultJSON, &resultObj)
+	if err := json.Unmarshal(resultJSON, &resultObj); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
 
 	// Verify sidecar was added
 	spec := resultObj["spec"].(map[string]interface{})
@@ -229,7 +194,9 @@ func TestAddAnnotationsScript(t *testing.T) {
 	}
 
 	var resultObj map[string]interface{}
-	json.Unmarshal(resultJSON, &resultObj)
+	if err := json.Unmarshal(resultJSON, &resultObj); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
 
 	// Verify annotation was added
 	metadata := resultObj["metadata"].(map[string]interface{})

@@ -74,7 +74,7 @@ func TestLoadScriptsFromAnnotations_NoAnnotation(t *testing.T) {
 		t.Fatalf("LoadScriptsFromAnnotations failed: %v", err)
 	}
 
-	if scripts != nil && len(scripts) != 0 {
+	if len(scripts) != 0 {
 		t.Errorf("Expected nil or empty scripts, got %d", len(scripts))
 	}
 }
@@ -89,7 +89,7 @@ func TestLoadScriptsFromAnnotations_NilAnnotations(t *testing.T) {
 		t.Fatalf("LoadScriptsFromAnnotations failed: %v", err)
 	}
 
-	if scripts != nil && len(scripts) != 0 {
+	if len(scripts) != 0 {
 		t.Errorf("Expected nil or empty scripts, got %d", len(scripts))
 	}
 }
@@ -310,7 +310,7 @@ func TestNewScriptLoader(t *testing.T) {
 	loader := NewScriptLoader(clientset, logger)
 
 	if loader == nil {
-		t.Error("Expected non-nil loader")
+		t.Fatal("Expected non-nil loader")
 	}
 
 	if loader.clientset == nil {

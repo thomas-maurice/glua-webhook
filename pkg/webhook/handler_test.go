@@ -444,7 +444,7 @@ func TestNewWebhookHandler(t *testing.T) {
 	handler := NewWebhookHandler(clientset, logger, "mutating")
 
 	if handler == nil {
-		t.Error("Expected non-nil handler")
+		t.Fatal("Expected non-nil handler")
 	}
 
 	if handler.clientset == nil {

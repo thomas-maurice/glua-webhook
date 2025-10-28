@@ -311,7 +311,7 @@ func TestNewScriptRunner(t *testing.T) {
 	runner := NewScriptRunner(logger)
 
 	if runner == nil {
-		t.Error("Expected non-nil runner")
+		t.Fatal("Expected non-nil runner")
 	}
 
 	if runner.logger != logger {

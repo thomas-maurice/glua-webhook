@@ -185,6 +185,6 @@ func BenchmarkTypeRegistry(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runner.RunScript("bench", script, inputJSON)
+		_, _ = runner.RunScript("bench", script, inputJSON)
 	}
 }

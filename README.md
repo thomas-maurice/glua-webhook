@@ -1,533 +1,720 @@
 # glua-webhook
 
-**A Kubernetes admission webhook that transforms resources using Lua scripts stored in ConfigMaps.**
+**Kubernetes admission webhook that mutates/validates resources using Lua scripts stored in ConfigMaps.**
 
-glua-webhook intercepts Kubernetes resource creation/updates and runs your custom Lua scripts against them - providing a programmable, dynamic mutation/validation layer that doesn't require webhook redeployment when policies change.
+Change policies by editing ConfigMaps - no recompilation, no redeployment needed.
 
-## What Problem Does This Solve?
+## Quick Start (Kubernetes User)
 
-Traditional Kubernetes admission controllers are compiled binaries. Changing policies means recompiling, rebuilding images, and redeploying. glua-webhook solves this by:
-
-- **Storing policies as ConfigMaps** - Update a ConfigMap, policy changes immediately
-- **Writing logic in Lua** - No compilation, no container rebuilds
-- **Chaining transformations** - Multiple scripts run sequentially on the same resource
-- **Dynamic validation** - Reject resources that don't meet criteria without redeploy
-
-**Use glua-webhook when you need:**
-- Sidecar injection (logging, monitoring, security agents)
-- Policy enforcement (required labels, naming conventions, resource limits)
-- Default value injection (resource requests, annotations, labels)
-- Dynamic configuration (fetch data from APIs, apply conditional logic)
-- Compliance labeling (audit trails, regulatory tags)
-
-## How It Works
-
-```
-┌──────────────┐
-│ kubectl apply│
-└──────┬───────┘
-       │ Pod YAML
-       ▼
-┌─────────────────────────────┐
-│   Kubernetes API Server     │
-│  (Admission Controller)     │
-└──────┬──────────────────────┘
-       │ AdmissionReview{Request}
-       ▼
-┌─────────────────────────────┐
-│      glua-webhook           │
-│                             │
-│  1. Extract annotations     │
-│  2. Fetch ConfigMaps        │
-│  3. Execute Lua scripts     │
-│  4. Generate JSONPatch      │
-└──────┬──────────────────────┘
-       │ AdmissionReview{Response}
-       ▼
-┌─────────────────────────────┐
-│    Modified Pod created     │
-└─────────────────────────────┘
-```
-
-**Workflow:**
-
-1. User creates/updates a Kubernetes resource with annotation `glua.maurice.fr/scripts: "namespace/configmap-name"`
-2. Kubernetes API server calls glua-webhook (mutating or validating)
-3. Webhook parses annotation and fetches ConfigMap(s) containing Lua scripts
-4. Scripts execute in alphabetical order (each in isolated VM)
-5. Modified resource is created, or request is rejected if validation fails
-
-## Real Example
-
-**What you submit:**
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nginx
-  annotations:
-    glua.maurice.fr/scripts: "default/inject-logging"
-spec:
-  containers:
-  - name: nginx
-    image: nginx:latest
-```
-
-**ConfigMap with Lua script:**
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: inject-logging
-  namespace: default
-data:
-  script.lua: |
-    -- Only process Pods
-    if object.kind ~= "Pod" then return end
-
-    -- Add Fluent Bit sidecar for log collection
-    table.insert(object.spec.containers, {
-      name = "fluent-bit",
-      image = "fluent/fluent-bit:latest",
-      volumeMounts = {{
-        name = "varlog",
-        mountPath = "/var/log",
-        readOnly = true
-      }}
-    })
-
-    -- Add host path volume
-    if object.spec.volumes == nil then
-      object.spec.volumes = {}
-    end
-    table.insert(object.spec.volumes, {
-      name = "varlog",
-      hostPath = { path = "/var/log" }
-    })
-
-    -- Add label for tracking
-    if object.metadata.labels == nil then
-      object.metadata.labels = {}
-    end
-    object.metadata.labels["logging-injected"] = "true"
-```
-
-**What gets created:**
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nginx
-  labels:
-    logging-injected: "true"       # ← ADDED BY SCRIPT
-  annotations:
-    glua.maurice.fr/scripts: "default/inject-logging"
-spec:
-  containers:
-  - name: nginx
-    image: nginx:latest
-  - name: fluent-bit               # ← ADDED BY SCRIPT
-    image: fluent/fluent-bit:latest
-    volumeMounts:
-    - name: varlog
-      mountPath: /var/log
-      readOnly: true
-  volumes:                         # ← ADDED BY SCRIPT
-  - name: varlog
-    hostPath:
-      path: /var/log
-```
-
-**Result:** Every Pod automatically gets log collection without modifying deployments or charts.
-
-**To change the policy:** Just edit the ConfigMap - no webhook redeployment needed.
-
-## Features
-
-### Dual Webhook Support
-
-- **MutatingAdmissionWebhook**: Transform resources (add sidecars, labels, defaults)
-- **ValidatingAdmissionWebhook**: Reject resources that don't meet criteria
-
-Controlled via namespace labels:
-- `glua.maurice.fr/enabled=true` - Enable mutation
-- `glua.maurice.fr/validation-enabled=true` - Enable validation
-
-### ConfigMap-Based Scripts
-
-Scripts stored in ConfigMaps with `script.lua` key. Update the ConfigMap, policy changes immediately.
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: my-policy
-  namespace: default
-data:
-  script.lua: |
-    -- Lua code here
-    object.metadata.labels["processed"] = "true"
-```
-
-### Sequential Execution
-
-Chain multiple scripts by listing them in annotation:
-
-```yaml
-metadata:
-  annotations:
-    glua.maurice.fr/scripts: "security/psp,monitoring/inject-metrics,common/labels"
-```
-
-Scripts execute in **alphabetical order** by `namespace/configmap-name`:
-1. `common/labels`
-2. `monitoring/inject-metrics`
-3. `security/psp`
-
-Output of one script becomes input to the next.
-
-### Isolated Lua VMs
-
-Each script runs in its own gopher-lua VM instance - no state pollution, no global variable conflicts.
-
-### Full glua Module Access
-
-Scripts have access to all [glua](https://github.com/thomas-maurice/glua) modules:
-
-```lua
-local json = require("json")     -- JSON parse/stringify
-local yaml = require("yaml")     -- YAML parse/stringify
-local http = require("http")     -- HTTP client
-local time = require("time")     -- Time functions
-local hash = require("hash")     -- SHA256, MD5
-local base64 = require("base64") -- Encoding
-local template = require("template") -- Go templates
-local log = require("log")       -- Structured logging
-local spew = require("spew")     -- Debug printing
-local fs = require("fs")         -- File system (read-only)
-```
-
-### TypeRegistry Integration
-
-glua-webhook uses [glua TypeRegistry](https://github.com/thomas-maurice/glua#type-registry) to provide Lua Language Server annotations. This enables:
-
-- **IDE autocompletion** for Kubernetes types
-- **Type checking** in your editor
-- **Generated stubs** for all K8s API objects
-
-See [docs/guides/type-stubs.md](docs/guides/type-stubs.md) for IDE setup.
-
-### Comprehensive Logging
-
-Every step is logged with context for debugging:
-
-```
-INFO  Received admission request uid=abc123 kind=Pod name=nginx namespace=default
-INFO  Extracted annotation glua.maurice.fr/scripts: "default/inject-logging"
-INFO  Loading script from ConfigMap default/inject-logging
-INFO  Executing script default/inject-logging (1/1)
-INFO  Script default/inject-logging completed successfully in 3.2ms
-INFO  Generated JSONPatch with 5 operations
-INFO  Admission allowed with modifications
-```
-
-### High Test Coverage
-
-- Unit tests: >70% coverage (luarunner: 90.5%, scriptloader: 98%, webhook: 82.2%)
-- Integration tests: Kind cluster-based end-to-end tests
-- Script tests: Framework for testing Lua scripts in isolation
-
-## Quick Start (5 minutes)
-
-### Prerequisites
-
-- Kubernetes 1.20+
-- kubectl
-- Docker
-- Kind (for local testing)
-
-**Using Nix?** We provide a flake:
+### 1. Deploy the Webhook
 
 ```bash
-direnv allow  # Loads go, kubectl, kind, curl, wget, make, golangci-lint
-```
+# Create namespace
+kubectl create namespace glua-webhook
 
-### Installation
+# Apply manifests (includes RBAC, deployment, service, TLS setup)
+kubectl apply -f https://github.com/thomas-maurice/glua-webhook/releases/latest/download/install.yaml
 
-```bash
-# Clone
-git clone https://github.com/thomas-maurice/glua-webhook
-cd glua-webhook
-
-# Create Kind cluster
-make kind-create
-
-# Build and deploy webhook
-make kind-deploy
-
-# Enable webhook for default namespace
+# Enable for your namespace
 kubectl label namespace default glua.maurice.fr/enabled=true
 ```
 
-### Create Your First Script
+### 2. Create a Policy Script
 
 ```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: add-processed-label
-  namespace: default
-data:
-  script.lua: |
-    -- Ensure metadata.labels exists
-    if object.metadata == nil then
-      object.metadata = {}
-    end
-    if object.metadata.labels == nil then
-      object.metadata.labels = {}
-    end
-
-    -- Add labels
-    object.metadata.labels["processed-by"] = "glua-webhook"
-    object.metadata.labels["processed-at"] = os.date("%Y-%m-%dT%H:%M:%SZ")
-EOF
+kubectl create configmap add-labels \
+  --namespace default \
+  --from-literal=script.lua='
+object.metadata = object.metadata or {}
+object.metadata.labels = object.metadata.labels or {}
+object.metadata.labels["processed-by"] = "glua-webhook"
+object.metadata.labels["processed-at"] = os.date("%Y-%m-%dT%H:%M:%SZ")
+'
 ```
 
-### Test It
+### 3. Use It
 
 ```bash
-# Create a pod with the annotation
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-pod
-  annotations:
-    glua.maurice.fr/scripts: "default/add-processed-label"
-spec:
-  containers:
-  - name: nginx
-    image: nginx:latest
-EOF
+# Create a Pod referencing the script
+kubectl run nginx --image=nginx \
+  --annotations='glua.maurice.fr/scripts=default/add-labels'
 
 # Check the result
-kubectl get pod test-pod -o jsonpath='{.metadata.labels}' | jq
+kubectl get pod nginx -o jsonpath='{.metadata.labels}' | jq
 ```
 
 Output:
-
 ```json
 {
-  "processed-at": "2025-01-15T14:32:10Z",
-  "processed-by": "glua-webhook"
+  "processed-at": "2025-10-28T22:00:00Z",
+  "processed-by": "glua-webhook",
+  "run": "nginx"
 }
 ```
 
-### Try Example Scripts
-
-The repository includes working examples:
+### 4. Update Policy (No Redeployment!)
 
 ```bash
-# Apply all example ConfigMaps
-kubectl apply -f examples/manifests/01-configmaps.yaml
+# Edit the ConfigMap to change the policy
+kubectl edit configmap add-labels
 
-# Create a pod with multiple scripts
-kubectl apply -f examples/manifests/07-example-pod.yaml
-
-# Inspect the transformed pod
-kubectl get pod example-pod -o yaml
+# Delete and recreate the pod - new policy applies immediately
+kubectl delete pod nginx
+kubectl run nginx --image=nginx \
+  --annotations='glua.maurice.fr/scripts=default/add-labels'
 ```
 
-The pod will have:
-- Labels with processing timestamps (add-label.lua)
-- Fluent Bit sidecar with volume mounts (inject-sidecar.lua)
-- Mutation metadata in annotations (add-annotations.lua)
+**That's it!** Your pods are now automatically processed by Lua scripts.
 
-## Use Cases
+---
 
-### 1. Sidecar Injection
+## What Problem Does This Solve?
 
-Automatically inject sidecars for logging, monitoring, security, or service mesh:
+Traditional admission controllers are compiled binaries - changing policies requires:
+1. Modify code
+2. Recompile
+3. Build Docker image
+4. Push to registry
+5. Update deployment
+6. Wait for rollout
 
-```lua
--- Inject Datadog APM agent
-if object.kind == "Pod" and object.metadata.namespace == "production" then
-  -- Check if already injected
-  local has_datadog = false
-  for i = 1, #object.spec.containers do
-    if object.spec.containers[i].name == "datadog-agent" then
-      has_datadog = true
-      break
-    end
+**glua-webhook eliminates all of this:**
+- Policies live in ConfigMaps
+- Edit ConfigMap, policy changes instantly
+- No compilation, no Docker, no deployment
+- Lua is easy to write and test
+
+---
+
+## Real-World Examples
+
+### Example 1: Inject Logging Sidecar
+
+**Create the script:**
+```bash
+kubectl create configmap inject-logging --from-literal=script.lua='
+if object.kind ~= "Pod" then return end
+
+object.spec = object.spec or {}
+object.spec.containers = object.spec.containers or {}
+
+-- Check if already exists
+for i = 1, #object.spec.containers do
+  if object.spec.containers[i].name == "fluent-bit" then return end
+end
+
+-- Add sidecar
+table.insert(object.spec.containers, {
+  name = "fluent-bit",
+  image = "fluent/fluent-bit:latest",
+  volumeMounts = {{name = "varlog", mountPath = "/var/log", readOnly = true}}
+})
+
+-- Add volume
+object.spec.volumes = object.spec.volumes or {}
+table.insert(object.spec.volumes, {
+  name = "varlog",
+  hostPath = {path = "/var/log"}
+})
+'
+```
+
+**Use it:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+  annotations:
+    glua.maurice.fr/scripts: "default/inject-logging"
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+```
+
+**Result:** Every Pod automatically gets Fluent Bit sidecar for log collection.
+
+---
+
+### Example 2: Enforce Cost-Center Labels
+
+**Create validation script:**
+```bash
+kubectl create configmap validate-cost-center --from-literal=script.lua='
+if object.kind ~= "Pod" then return end
+
+if not object.metadata or not object.metadata.labels or
+   not object.metadata.labels["cost-center"] then
+  error("All Pods must have a cost-center label")
+end
+
+local cc = object.metadata.labels["cost-center"]
+if not string.match(cc, "^CC%-%d+$") then
+  error("cost-center must match format CC-NNNN")
+end
+'
+
+# Enable validation webhook
+kubectl label namespace default glua.maurice.fr/validation-enabled=true
+```
+
+**Test it:**
+```bash
+# This fails
+$ kubectl run test --image=nginx --annotations='glua.maurice.fr/scripts=default/validate-cost-center'
+Error: All Pods must have a cost-center label
+
+# This succeeds
+$ kubectl run test --image=nginx \
+    --labels='cost-center=CC-1234' \
+    --annotations='glua.maurice.fr/scripts=default/validate-cost-center'
+pod/test created
+```
+
+---
+
+### Example 3: Set Default Resource Requests
+
+**Create script:**
+```bash
+kubectl create configmap set-defaults --from-literal=script.lua='
+if object.kind ~= "Pod" then return end
+
+for i = 1, #object.spec.containers do
+  local c = object.spec.containers[i]
+  c.resources = c.resources or {}
+  c.resources.requests = c.resources.requests or {}
+
+  if not c.resources.requests.cpu then
+    c.resources.requests.cpu = "100m"
   end
-
-  if not has_datadog then
-    table.insert(object.spec.containers, {
-      name = "datadog-agent",
-      image = "datadog/agent:latest",
-      env = {
-        {name = "DD_API_KEY", valueFrom = {secretKeyRef = {name = "datadog", key = "api-key"}}},
-        {name = "DD_APM_ENABLED", value = "true"}
-      }
-    })
+  if not c.resources.requests.memory then
+    c.resources.requests.memory = "128Mi"
   end
 end
+'
 ```
 
-### 2. Policy Enforcement
-
-Validate resources meet organizational standards:
-
-```lua
--- Enforce cost-center label on all Pods
-if object.kind == "Pod" then
-  if object.metadata == nil or object.metadata.labels == nil or
-     object.metadata.labels["cost-center"] == nil then
-    error("All Pods must have a 'cost-center' label for billing")
-  end
-
-  -- Validate format (e.g., "CC-1234")
-  local cc = object.metadata.labels["cost-center"]
-  if not string.match(cc, "^CC%-%d+$") then
-    error("cost-center label must match format 'CC-NNNN'")
-  end
-end
+**Apply to namespace (all Pods):**
+```bash
+# Label namespace to apply to all Pods
+kubectl label namespace default \
+  glua.maurice.fr/enabled=true \
+  glua.maurice.fr/default-scripts=default/set-defaults
 ```
 
-### 3. Default Values
+**Result:** All Pods in namespace get sensible defaults if not specified.
 
-Set sensible defaults for resources:
+---
 
-```lua
--- Set default CPU/memory requests if not specified
-if object.kind == "Pod" and object.spec and object.spec.containers then
-  for i = 1, #object.spec.containers do
-    local c = object.spec.containers[i]
+## Key Features
 
-    -- Ensure resources structure exists
-    if c.resources == nil then c.resources = {} end
-    if c.resources.requests == nil then c.resources.requests = {} end
-    if c.resources.limits == nil then c.resources.limits = {} end
+### ConfigMap-Based Scripts
+Scripts live in ConfigMaps with key `script.lua`. Edit ConfigMap to update policy - no redeployment.
 
-    -- Set defaults
-    if c.resources.requests.cpu == nil then
-      c.resources.requests.cpu = "100m"
-    end
-    if c.resources.requests.memory == nil then
-      c.resources.requests.memory = "128Mi"
-    end
-    if c.resources.limits.memory == nil then
-      c.resources.limits.memory = "512Mi"
-    end
-  end
-end
+### Sequential Execution
+Chain multiple scripts:
+```yaml
+annotations:
+  glua.maurice.fr/scripts: "security/psp,monitoring/inject-metrics,common/labels"
+```
+Executes alphabetically: `common/labels` → `monitoring/inject-metrics` → `security/psp`
+
+### Mutation & Validation
+- **MutatingAdmissionWebhook**: Transform resources (add sidecars, set defaults)
+- **ValidatingAdmissionWebhook**: Reject resources (enforce policies)
+
+Enable per-namespace:
+```bash
+kubectl label namespace prod \
+  glua.maurice.fr/enabled=true \
+  glua.maurice.fr/validation-enabled=true
 ```
 
-### 4. Dynamic Configuration
+### Full Lua Power
+Scripts access [glua](https://github.com/thomas-maurice/glua) modules:
+- `json` - Parse/stringify JSON
+- `yaml` - Parse/stringify YAML
+- `http` - Make HTTP requests
+- `time` - Time functions
+- `hash` - SHA256, MD5
+- `log` - Structured logging
+- `template` - Go templates
 
-Fetch data from external APIs:
-
+**Example:**
 ```lua
 local http = require("http")
 local json = require("json")
-local log = require("log")
 
--- Get latest approved image tag from internal registry
-local response, err = http.get("https://registry.internal/api/v1/images/myapp/latest-approved")
-if err then
-  log.warn("Failed to fetch approved image tag: " .. err)
-  return
-end
-
-local data, parse_err = json.parse(response.body)
-if parse_err then
-  log.warn("Failed to parse registry response: " .. parse_err)
-  return
-end
-
--- Update first container image
-if data.tag and object.spec and object.spec.containers and #object.spec.containers > 0 then
-  object.spec.containers[1].image = "registry.internal/myapp:" .. data.tag
-  log.info("Updated image to approved tag: " .. data.tag)
+-- Fetch approved image tag from registry API
+local resp, err = http.get("https://registry.internal/api/approved-tags")
+if not err then
+  local data = json.parse(resp.body)
+  object.spec.containers[1].image = "myapp:" .. data.tag
 end
 ```
 
-### 5. Compliance and Audit
+### Test Scripts Locally
+Test before deploying to K8s:
+```bash
+# Download CLI
+wget https://github.com/thomas-maurice/glua-webhook/releases/latest/download/glua-webhook-linux-amd64
 
-Add audit trails and compliance labels:
+# Test on existing Pod
+kubectl get pod nginx -o json | ./glua-webhook exec --script myscript.lua
 
-```lua
-local json = require("json")
-local hash = require("hash")
+# Test on file
+./glua-webhook exec --script myscript.lua --input pod.json --output result.json
 
--- Create audit metadata
-local audit = {
-  mutated_at = os.date("%Y-%m-%dT%H:%M:%SZ"),
-  mutated_by = "glua-webhook",
-  original_hash = hash.sha256(json.stringify(object) or "")
-}
-
--- Add to annotations
-if object.metadata.annotations == nil then
-  object.metadata.annotations = {}
-end
-object.metadata.annotations["audit/mutation-log"] = json.stringify(audit)
-
--- Add compliance labels
-if object.metadata.labels == nil then
-  object.metadata.labels = {}
-end
-object.metadata.labels["compliance/pci-dss"] = "validated"
-object.metadata.labels["compliance/hipaa"] = "compliant"
-object.metadata.labels["security/scanned"] = "true"
+# Chain scripts (simulates webhook)
+kubectl get pod nginx -o json | \
+  ./glua-webhook exec --script add-labels.lua | \
+  ./glua-webhook exec --script inject-sidecar.lua
 ```
+
+---
+
+## Installation
+
+### Quick Install (Recommended)
+
+```bash
+kubectl apply -f https://github.com/thomas-maurice/glua-webhook/releases/latest/download/install.yaml
+kubectl label namespace default glua.maurice.fr/enabled=true
+```
+
+### Manual Install
+
+```bash
+git clone https://github.com/thomas-maurice/glua-webhook
+cd glua-webhook
+
+# Deploy to existing cluster
+kubectl apply -f examples/manifests/00-namespace.yaml
+kubectl apply -f examples/manifests/01-configmaps.yaml
+kubectl apply -f examples/manifests/02-deployment.yaml
+kubectl apply -f examples/manifests/03-service.yaml
+kubectl apply -f examples/manifests/04-rbac.yaml
+kubectl apply -f examples/manifests/05-webhooks.yaml
+
+# Or use local Kind cluster
+make kind-create
+make kind-deploy
+kubectl label namespace default glua.maurice.fr/enabled=true
+```
+
+### TLS Certificate Setup
+
+Kubernetes requires TLS for admission webhooks. Two options:
+
+**Option 1: cert-manager (Recommended)**
+```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
+kubectl apply -f examples/manifests/cert-manager-issuer.yaml
+```
+
+**Option 2: Manual certificates**
+```bash
+./scripts/generate-certs.sh
+kubectl create secret tls glua-webhook-certs \
+  --cert=certs/tls.crt \
+  --key=certs/tls.key \
+  -n glua-webhook
+```
+
+---
 
 ## Writing Lua Scripts
 
+### How Lua Scripts Work with Kubernetes Resources
+
+When a Kubernetes resource is admitted, glua-webhook:
+1. Converts the resource to JSON
+2. Parses JSON into a Lua table
+3. Sets global variable `object` to this table
+4. Executes your script
+5. Converts modified `object` back to JSON
+6. Generates JSONPatch with changes
+
+**The `object` variable is a Lua table matching the Kubernetes resource structure exactly.**
+
 ### Basic Structure
 
-Every script receives a global variable `object` containing the Kubernetes resource as a Lua table:
+Scripts receive global variable `object` (the Kubernetes resource):
 
 ```lua
 -- Read fields
 local name = object.metadata.name
-local namespace = object.metadata.namespace
 local kind = object.kind
+local namespace = object.metadata.namespace
 
 -- Modify fields (mutation)
-if object.metadata.labels == nil then
-  object.metadata.labels = {}
-end
+object.metadata.labels = object.metadata.labels or {}
 object.metadata.labels["env"] = "production"
 
 -- Reject resource (validation)
-if object.metadata.labels["owner"] == nil then
-  error("Resources must have an 'owner' label")
+if not object.metadata.labels["owner"] then
+  error("Resources must have an owner label")
 end
 
--- No return statement needed - modifications to 'object' are automatic
+-- No return needed - modifications to 'object' are automatic
 ```
 
-### Nil Checking
+### Understanding the `object` Table Structure
+
+The `object` table mirrors the Kubernetes YAML structure:
+
+```yaml
+# Kubernetes Pod YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  namespace: default
+  labels:
+    app: nginx
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+```
+
+Becomes this Lua table:
+
+```lua
+object = {
+  apiVersion = "v1",
+  kind = "Pod",
+  metadata = {
+    name = "nginx",
+    namespace = "default",
+    labels = {
+      app = "nginx"
+    }
+  },
+  spec = {
+    containers = {
+      {
+        name = "nginx",
+        image = "nginx:latest",
+        ports = {
+          {containerPort = 80}
+        }
+      }
+    }
+  }
+}
+```
+
+### Safe Nil Checking (CRITICAL)
 
 **Always check for nil before accessing nested fields:**
 
 ```lua
--- WRONG - will error if metadata or labels is nil
+-- WRONG - crashes if metadata is nil
 object.metadata.labels["key"] = "value"
 
--- CORRECT - safe approach
-if object.metadata == nil then
-  object.metadata = {}
-end
-if object.metadata.labels == nil then
-  object.metadata.labels = {}
-end
+-- CORRECT - safe initialization
+object.metadata = object.metadata or {}
+object.metadata.labels = object.metadata.labels or {}
 object.metadata.labels["key"] = "value"
+```
+
+**Why this matters:** Resources may not have all fields populated. Accessing `object.metadata.labels` fails if `metadata` is nil.
+
+### Manipulating Kubernetes Resources
+
+#### 1. Adding/Modifying Labels
+
+```lua
+-- Initialize labels table
+object.metadata = object.metadata or {}
+object.metadata.labels = object.metadata.labels or {}
+
+-- Add single label
+object.metadata.labels["env"] = "production"
+object.metadata.labels["team"] = "platform"
+
+-- Copy label from one key to another
+if object.metadata.labels["app"] then
+  object.metadata.labels["app.kubernetes.io/name"] = object.metadata.labels["app"]
+end
+
+-- Add timestamp label
+object.metadata.labels["last-modified"] = os.date("%Y-%m-%dT%H:%M:%SZ")
+```
+
+#### 2. Adding/Modifying Annotations
+
+```lua
+-- Initialize annotations
+object.metadata.annotations = object.metadata.annotations or {}
+
+-- Add annotation
+object.metadata.annotations["description"] = "Managed by glua-webhook"
+
+-- Store JSON in annotation
+local json = require("json")
+local metadata = {processed = true, timestamp = os.time()}
+local encoded, err = json.stringify(metadata)
+if not err then
+  object.metadata.annotations["processing-info"] = encoded
+end
+```
+
+#### 3. Modifying Pod Containers
+
+**Adding a container:**
+```lua
+if object.kind ~= "Pod" then return end
+
+object.spec = object.spec or {}
+object.spec.containers = object.spec.containers or {}
+
+-- Add sidecar container
+table.insert(object.spec.containers, {
+  name = "sidecar",
+  image = "my-sidecar:latest",
+  env = {
+    {name = "LOG_LEVEL", value = "info"},
+    {name = "APP_NAME", value = object.metadata.name}
+  },
+  ports = {
+    {containerPort = 9090, name = "metrics"}
+  },
+  volumeMounts = {
+    {name = "config", mountPath = "/etc/config", readOnly = true}
+  }
+})
+```
+
+**Modifying existing containers:**
+```lua
+-- Iterate through all containers
+for i = 1, #object.spec.containers do
+  local container = object.spec.containers[i]
+
+  -- Add environment variable to all containers
+  container.env = container.env or {}
+  table.insert(container.env, {
+    name = "CLUSTER_NAME",
+    value = "production-us-west-2"
+  })
+
+  -- Set resource limits if not specified
+  container.resources = container.resources or {}
+  container.resources.limits = container.resources.limits or {}
+  if not container.resources.limits.memory then
+    container.resources.limits.memory = "512Mi"
+  end
+
+  -- Add volume mount to all containers
+  container.volumeMounts = container.volumeMounts or {}
+  table.insert(container.volumeMounts, {
+    name = "shared-data",
+    mountPath = "/data"
+  })
+end
+```
+
+**Finding and modifying specific container:**
+```lua
+for i = 1, #object.spec.containers do
+  if object.spec.containers[i].name == "app" then
+    -- Update image tag
+    object.spec.containers[i].image = "myapp:v2.0.0"
+
+    -- Add command
+    object.spec.containers[i].command = {"/bin/sh", "-c", "exec /app/start.sh"}
+
+    -- Add args
+    object.spec.containers[i].args = {"--port=8080", "--verbose"}
+  end
+end
+```
+
+#### 4. Adding Volumes
+
+```lua
+if object.kind ~= "Pod" then return end
+
+object.spec.volumes = object.spec.volumes or {}
+
+-- Add ConfigMap volume
+table.insert(object.spec.volumes, {
+  name = "config",
+  configMap = {
+    name = "app-config",
+    items = {
+      {key = "app.conf", path = "app.conf"}
+    }
+  }
+})
+
+-- Add Secret volume
+table.insert(object.spec.volumes, {
+  name = "secrets",
+  secret = {
+    secretName = "app-secrets",
+    defaultMode = 0400
+  }
+})
+
+-- Add EmptyDir volume
+table.insert(object.spec.volumes, {
+  name = "cache",
+  emptyDir = {
+    sizeLimit = "1Gi"
+  }
+})
+
+-- Add HostPath volume
+table.insert(object.spec.volumes, {
+  name = "host-data",
+  hostPath = {
+    path = "/var/data",
+    type = "DirectoryOrCreate"
+  }
+})
+```
+
+#### 5. Setting Resource Requests/Limits
+
+```lua
+for i = 1, #object.spec.containers do
+  local c = object.spec.containers[i]
+
+  -- Initialize resources structure
+  c.resources = c.resources or {}
+  c.resources.requests = c.resources.requests or {}
+  c.resources.limits = c.resources.limits or {}
+
+  -- Set requests
+  if not c.resources.requests.cpu then
+    c.resources.requests.cpu = "100m"
+  end
+  if not c.resources.requests.memory then
+    c.resources.requests.memory = "128Mi"
+  end
+
+  -- Set limits
+  if not c.resources.limits.cpu then
+    c.resources.limits.cpu = "1000m"
+  end
+  if not c.resources.limits.memory then
+    c.resources.limits.memory = "512Mi"
+  end
+end
+```
+
+#### 6. Adding Init Containers
+
+```lua
+object.spec.initContainers = object.spec.initContainers or {}
+
+table.insert(object.spec.initContainers, {
+  name = "init-db",
+  image = "busybox:latest",
+  command = {"sh", "-c", "until nc -z db 5432; do echo waiting for db; sleep 2; done"}
+})
+
+table.insert(object.spec.initContainers, {
+  name = "copy-configs",
+  image = "busybox:latest",
+  command = {"cp", "/config-source/app.conf", "/config/app.conf"},
+  volumeMounts = {
+    {name = "config-source", mountPath = "/config-source", readOnly = true},
+    {name = "config", mountPath = "/config"}
+  }
+})
+```
+
+#### 7. Modifying Service Specs
+
+```lua
+if object.kind ~= "Service" then return end
+
+object.spec = object.spec or {}
+
+-- Change service type
+object.spec.type = "LoadBalancer"
+
+-- Add ports
+object.spec.ports = object.spec.ports or {}
+table.insert(object.spec.ports, {
+  name = "https",
+  port = 443,
+  targetPort = 8443,
+  protocol = "TCP"
+})
+
+-- Set selector
+object.spec.selector = object.spec.selector or {}
+object.spec.selector["app"] = "myapp"
+
+-- Add annotations for cloud load balancer
+object.metadata.annotations = object.metadata.annotations or {}
+object.metadata.annotations["service.beta.kubernetes.io/aws-load-balancer-type"] = "nlb"
+```
+
+#### 8. Working with Arrays (Containers, Env Vars, etc.)
+
+```lua
+-- Check if array is empty
+if #object.spec.containers == 0 then
+  error("Pod must have at least one container")
+end
+
+-- Add to array
+table.insert(object.spec.containers, {name = "new-container", image = "nginx"})
+
+-- Remove from array by index
+table.remove(object.spec.containers, 2)
+
+-- Find and remove by name
+for i = #object.spec.containers, 1, -1 do
+  if object.spec.containers[i].name == "old-container" then
+    table.remove(object.spec.containers, i)
+  end
+end
+
+-- Check if value exists in array
+local has_port_80 = false
+for i = 1, #object.spec.containers[1].ports do
+  if object.spec.containers[1].ports[i].containerPort == 80 then
+    has_port_80 = true
+    break
+  end
+end
+```
+
+### Filter by Resource Type
+
+```lua
+-- Only process Pods
+if object.kind ~= "Pod" then return end
+
+-- Process multiple types
+if object.kind ~= "Pod" and object.kind ~= "Deployment" then
+  return
+end
+
+-- Only process specific namespace
+if object.metadata.namespace ~= "production" then return end
+
+-- Skip system namespaces
+local system_namespaces = {["kube-system"] = true, ["kube-public"] = true}
+if system_namespaces[object.metadata.namespace] then
+  return
+end
+
+-- Only process resources with specific label
+if not object.metadata.labels or not object.metadata.labels["process-me"] then
+  return
+end
 ```
 
 ### Using Modules
@@ -538,162 +725,271 @@ local log = require("log")
 local hash = require("hash")
 local time = require("time")
 
--- JSON parse/stringify
-local data, err = json.parse('{"foo":"bar"}')
-if not err then
-  local str, err2 = json.stringify(data)
-end
-
 -- Logging (appears in webhook logs)
-log.info("Processing: " .. object.metadata.name)
-log.warn("Warning message")
-log.error("Error message")
+log.info("Processing " .. object.metadata.name)
+log.warn("Missing optional field")
+log.error("Validation failed")
 
--- Hashing
-local h = hash.sha256("data")
-
--- Time
-local now = time.now()
-local formatted = time.format(now, "%Y-%m-%d")
-```
-
-### Complete Example
-
-```lua
--- inject-prometheus-exporter.lua
--- Injects Prometheus metrics exporter into Pods
-
-local log = require("log")
-
--- Only process Pods
-if object.kind ~= "Pod" then
-  log.info("Skipping non-Pod resource: " .. object.kind)
-  return
+-- JSON operations
+local data = {foo = "bar", nested = {key = "value"}}
+local str, err = json.stringify(data)
+if not err then
+  object.metadata.annotations["data"] = str
 end
 
--- Skip if exporter already present
-if object.spec and object.spec.containers then
-  for i = 1, #object.spec.containers do
-    if object.spec.containers[i].name == "prometheus-exporter" then
-      log.info("Prometheus exporter already present, skipping")
-      return
-    end
+-- Parse JSON from annotation
+if object.metadata.annotations["config"] then
+  local config, err = json.parse(object.metadata.annotations["config"])
+  if not err and config.enabled then
+    -- Use parsed config
+    object.metadata.labels["feature-enabled"] = "true"
   end
 end
 
--- Add Prometheus exporter sidecar
+-- Hashing
+local pod_hash = hash.sha256(object.metadata.name .. object.metadata.namespace)
+object.metadata.labels["pod-hash"] = pod_hash:sub(1, 8)
+
+-- Time operations
+local now = time.now()
+object.metadata.annotations["processed-at"] = tostring(now)
+```
+
+### Complete Working Example
+
+Here's a complete script that adds monitoring sidecar with full configuration:
+
+```lua
+local log = require("log")
+
+-- Only process Pods in production namespace
+if object.kind ~= "Pod" then return end
+if object.metadata.namespace ~= "production" then return end
+
+-- Skip if already has monitoring sidecar
+for i = 1, #object.spec.containers do
+  if object.spec.containers[i].name == "prometheus-exporter" then
+    log.info("Monitoring sidecar already present")
+    return
+  end
+end
+
+log.info("Adding monitoring sidecar to " .. object.metadata.name)
+
+-- Add prometheus exporter sidecar
 table.insert(object.spec.containers, {
   name = "prometheus-exporter",
   image = "prom/node-exporter:latest",
-  ports = {{containerPort = 9100, name = "metrics", protocol = "TCP"}}
+  ports = {{containerPort = 9100, name = "metrics", protocol = "TCP"}},
+  resources = {
+    requests = {cpu = "50m", memory = "64Mi"},
+    limits = {cpu = "100m", memory = "128Mi"}
+  },
+  volumeMounts = {
+    {name = "proc", mountPath = "/host/proc", readOnly = true},
+    {name = "sys", mountPath = "/host/sys", readOnly = true}
+  }
 })
 
--- Add Prometheus scrape annotations
-if object.metadata.annotations == nil then
-  object.metadata.annotations = {}
-end
+-- Add required volumes
+object.spec.volumes = object.spec.volumes or {}
+table.insert(object.spec.volumes, {
+  name = "proc",
+  hostPath = {path = "/proc"}
+})
+table.insert(object.spec.volumes, {
+  name = "sys",
+  hostPath = {path = "/sys"}
+})
+
+-- Add Prometheus annotations
+object.metadata.annotations = object.metadata.annotations or {}
 object.metadata.annotations["prometheus.io/scrape"] = "true"
 object.metadata.annotations["prometheus.io/port"] = "9100"
 object.metadata.annotations["prometheus.io/path"] = "/metrics"
 
-log.info("Injected Prometheus exporter into Pod: " .. object.metadata.name)
+-- Add monitoring label
+object.metadata.labels = object.metadata.labels or {}
+object.metadata.labels["monitoring"] = "enabled"
+
+log.info("Successfully added monitoring sidecar")
 ```
 
-**For comprehensive scripting guide, see [docs/guides/writing-scripts.md](docs/guides/writing-scripts.md).**
+### Testing Your Scripts Locally
 
-## Configuration
+Before deploying to Kubernetes, test scripts locally:
+
+```bash
+# Test on existing resource
+kubectl get pod nginx -o json | ./glua-webhook exec --script myscript.lua
+
+# Test with verbose logging
+kubectl get pod nginx -o json | ./glua-webhook exec --script myscript.lua --verbose
+
+# Test on file
+./glua-webhook exec --script myscript.lua --input pod.json --output result.json
+
+# View the diff
+diff <(cat pod.json | jq -S .) <(cat result.json | jq -S .)
+
+# Chain multiple scripts
+kubectl get pod nginx -o json | \
+  ./glua-webhook exec --script add-labels.lua | \
+  ./glua-webhook exec --script inject-sidecar.lua | \
+  jq .
+```
+
+### More Examples
+
+See [examples/scripts/README.md](examples/scripts/README.md) for:
+- `add-label.lua` - Add timestamps and processed flags
+- `inject-sidecar.lua` - Inject logging sidecar
+- `validate-labels.lua` - Enforce required labels
+- `add-annotations.lua` - Add JSON metadata
+- `propagate-deployment-labels.lua` - Transform label values
+
+Full scripting guide: [docs/guides/writing-scripts.md](docs/guides/writing-scripts.md)
+
+---
+
+## Configuration Reference
 
 ### Annotations (on resources)
 
-| Annotation | Description | Example |
-|------------|-------------|---------|
-| `glua.maurice.fr/scripts` | Comma-separated list of ConfigMap references in `namespace/name` format | `"default/script1,kube-system/script2"` |
+| Annotation | Value | Description |
+|------------|-------|-------------|
+| `glua.maurice.fr/scripts` | `"ns/cm1,ns/cm2"` | Comma-separated ConfigMap references |
 
 **Format:** `namespace/configmap-name`
-**Execution order:** Alphabetical by full reference (use numeric prefixes for explicit ordering)
+
+**Example:**
+```yaml
+metadata:
+  annotations:
+    glua.maurice.fr/scripts: "default/script1,kube-system/script2"
+```
 
 ### Namespace Labels
 
-| Label | Description | Values |
-|-------|-------------|--------|
-| `glua.maurice.fr/enabled` | Enable MutatingAdmissionWebhook for this namespace | `"true"` / `"false"` |
-| `glua.maurice.fr/validation-enabled` | Enable ValidatingAdmissionWebhook for this namespace | `"true"` / `"false"` |
+| Label | Value | Description |
+|-------|-------|-------------|
+| `glua.maurice.fr/enabled` | `"true"` | Enable mutation webhook |
+| `glua.maurice.fr/validation-enabled` | `"true"` | Enable validation webhook |
 
 **Example:**
-
 ```bash
-# Enable both webhooks for production namespace
-kubectl label namespace production \
+kubectl label namespace prod \
   glua.maurice.fr/enabled=true \
   glua.maurice.fr/validation-enabled=true
 ```
 
-### Webhook Server Flags
+### Webhook Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-port` | `8443` | HTTPS server port |
-| `-cert` | `/etc/webhook/certs/tls.crt` | TLS certificate file |
-| `-key` | `/etc/webhook/certs/tls.key` | TLS private key file |
-| `-kubeconfig` | `""` | Path to kubeconfig (empty for in-cluster config) |
-| `-mutating-path` | `/mutate` | Mutating webhook endpoint path |
-| `-validating-path` | `/validate` | Validating webhook endpoint path |
+| `--port` | `8443` | HTTPS server port |
+| `--cert` | `/etc/webhook/certs/tls.crt` | TLS certificate |
+| `--key` | `/etc/webhook/certs/tls.key` | TLS private key |
+| `--kubeconfig` | `""` | Kubeconfig path (empty = in-cluster) |
 
-### Environment Variables
+---
 
-| Variable | Description |
-|----------|-------------|
-| `TLS_CERT_FILE` | Override TLS certificate path |
-| `TLS_KEY_FILE` | Override TLS key path |
+## Troubleshooting
 
-## Development
+### Webhook Not Working
 
-### Project Structure
+```bash
+# Check webhook is running
+kubectl get pods -n glua-webhook
 
+# View logs
+kubectl logs -n glua-webhook deployment/glua-webhook -f
+
+# Verify namespace is labeled
+kubectl get namespace default -o jsonpath='{.metadata.labels}'
+
+# Test webhook connectivity
+kubectl get endpoints -n glua-webhook
 ```
-.
-├── cmd/
-│   └── webhook/            # Main webhook server
-├── pkg/
-│   ├── luarunner/          # Lua script execution engine with TypeRegistry
-│   ├── scriptloader/       # ConfigMap loader with annotation parsing
-│   └── webhook/            # HTTP handlers for mutating/validating webhooks
-├── test/
-│   ├── integration/        # Kind-based integration tests
-│   └── script_test.go      # Lua script unit tests
-├── examples/
-│   ├── manifests/          # Kubernetes deployment YAMLs
-│   └── scripts/            # Example Lua scripts (add-label, inject-sidecar, etc.)
-├── docs/                   # Comprehensive documentation
-│   ├── getting-started/    # Installation guides
-│   ├── guides/             # Scripting guides, type stubs
-│   └── reference/          # API reference, annotations
-├── Dockerfile              # Multi-stage Docker build
-├── Makefile                # Build and test targets
-├── flake.nix               # Nix development environment
-├── .envrc                  # direnv configuration
-└── CLAUDE.md               # Development workflow guidelines
+
+### Script Errors
+
+```bash
+# View webhook logs for errors
+kubectl logs -n glua-webhook deployment/glua-webhook | grep ERROR
+
+# Test script locally first
+kubectl get pod mypod -o json | ./glua-webhook exec --script myscript.lua
+
+# Verify ConfigMap exists
+kubectl get cm myscript -n default
 ```
+
+### TLS Issues
+
+```bash
+# Check certificate secret
+kubectl get secret glua-webhook-certs -n glua-webhook
+
+# Verify certificate
+kubectl get secret glua-webhook-certs -n glua-webhook \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout
+```
+
+---
+
+## Development Setup
+
+### For Developers
+
+If you want to develop glua-webhook or test changes:
+
+#### Using Nix (Recommended)
+
+We provide a Nix flake with all tools:
+
+```bash
+# Clone repo
+git clone https://github.com/thomas-maurice/glua-webhook
+cd glua-webhook
+
+# Enable Nix flake (provides go, kubectl, kind, make, golangci-lint)
+direnv allow
+
+# Or manually
+nix develop
+```
+
+The flake provides:
+- Go (latest)
+- kubectl
+- kind
+- curl, wget
+- make
+- golangci-lint
+
+#### Manual Setup
+
+Install dependencies:
+- Go 1.25+
+- kubectl
+- kind
+- make
+- golangci-lint (optional)
 
 ### Build and Test
 
 ```bash
-# Build webhook binary
+# Build binary
 make build
 
-# Build Docker image
-make docker-build
-
-# Run ALL tests (unit + integration) and build
+# Run all tests (unit + integration)
 make
 
 # Run only unit tests
 make test-unit
 
-# Run integration tests with Kind
-make test-integration
-
-# Test example Lua scripts
+# Test Lua scripts
 make test-scripts
 
 # Format code
@@ -703,276 +999,104 @@ make fmt
 make lint
 ```
 
-### Local Development with Kind
+### Local Testing with Kind
 
 ```bash
 # Create Kind cluster
 make kind-create
 
-# Build and load Docker image into Kind
-make kind-load-image
-
-# Deploy webhook to Kind cluster
+# Build and deploy to Kind
 make kind-deploy
 
-# Watch webhook logs
+# Watch logs
 kubectl logs -n glua-webhook deployment/glua-webhook -f
 
-# Delete Kind cluster
+# Test changes
+kubectl apply -f examples/manifests/07-example-pod.yaml
+
+# Clean up
 make kind-delete
 ```
 
-### Using Nix Development Environment
+### Project Structure
 
-The repository includes a Nix flake providing:
-
-- go (latest)
-- kubectl
-- kind
-- curl, wget
-- gnumake
-- golangci-lint
-
-**Enable automatically with direnv:**
-
-```bash
-direnv allow
+```
+.
+├── cmd/glua-webhook/      # CLI (exec, webhook commands)
+│   ├── main.go            # Entrypoint
+│   ├── root.go            # Root command
+│   ├── exec.go            # Test scripts locally
+│   └── webhook.go         # Run webhook server
+├── pkg/
+│   ├── luarunner/         # Lua execution engine
+│   ├── scriptloader/      # ConfigMap loader
+│   └── webhook/           # HTTP handlers
+├── examples/
+│   ├── manifests/         # Kubernetes YAMLs
+│   └── scripts/           # Example Lua scripts
+├── docs/                  # Documentation
+├── test/                  # Integration tests
+├── Makefile               # Build targets
+├── flake.nix              # Nix dev environment
+└── .envrc                 # direnv config
 ```
 
-**Or manually:**
+### Adding Features
 
-```bash
-nix develop
-```
+1. Write code
+2. Add tests (>70% coverage required)
+3. Run `make` (tests + build)
+4. Run `make fmt` and `make lint`
+5. Update docs
+6. Submit PR
 
-### Testing Lua Scripts
+See [CLAUDE.md](CLAUDE.md) for full workflow.
 
-Framework for testing scripts in isolation:
-
-```go
-// test/script_test.go
-func TestAddLabel(t *testing.T) {
-    input := `{
-        "kind": "Pod",
-        "metadata": {"name": "test", "namespace": "default"}
-    }`
-
-    script := `
-        if object.metadata.labels == nil then
-            object.metadata.labels = {}
-        end
-        object.metadata.labels["test-label"] = "test-value"
-    `
-
-    runner := setupScriptRunner(t)
-    output, err := runner.RunScriptsSequentially(
-        map[string]string{"test": script},
-        []byte(input),
-    )
-
-    require.NoError(t, err)
-    assert.Contains(t, string(output), `"test-label":"test-value"`)
-}
-```
-
-Run with:
-
-```bash
-make test-scripts
-```
-
-## Performance
-
-**Benchmarks (single script):**
-
-- Script execution: 1-5ms (depends on complexity)
-- VM creation: ~0.1ms
-- ConfigMap load: 10-50ms (cached by Kubernetes client)
-- **Total latency:** 10-50ms for 1-3 scripts
-
-**Optimization tips:**
-
-- Keep scripts simple (< 100 lines)
-- Avoid HTTP requests unless necessary
-- Use alphabetical ordering to run cheap scripts first
-- Combine related mutations into single scripts
-- Use namespace selectors to limit webhook scope
-- Monitor webhook logs for slow scripts
-
-## Security Considerations
-
-- **TLS Required:** Kubernetes requires TLS for admission webhooks
-- **RBAC:** Webhook needs GET access to ConfigMaps in referenced namespaces
-- **Non-root Container:** Runs as UID 1000 (non-root user)
-- **Lua Sandboxing:** Scripts run in isolated gopher-lua VMs (no global state sharing)
-- **No OS Access:** Lua VMs have no direct OS access (filesystem module is read-only)
-- **Network Policies:** Consider restricting webhook egress if scripts make HTTP calls
-- **ConfigMap Permissions:** Limit who can create/modify ConfigMaps with scripts
-- **Audit Logging:** All script executions are logged with context
-
-**Best practices:**
-
-- Use namespace selectors to limit webhook scope
-- Review scripts before deployment (especially if they make HTTP requests)
-- Use RBAC to restrict ConfigMap modifications
-- Monitor webhook logs for suspicious activity
-- Use `failurePolicy: Fail` for critical validation webhooks
-- Test scripts thoroughly before production use
-
-## Troubleshooting
-
-### Webhook Not Receiving Requests
-
-```bash
-# Check webhook configuration
-kubectl get mutatingwebhookconfiguration glua-mutating-webhook -o yaml
-kubectl get validatingwebhookconfiguration glua-validating-webhook -o yaml
-
-# Verify namespace has required label
-kubectl get namespace default -o jsonpath='{.metadata.labels}'
-
-# Check webhook pods are running
-kubectl get pods -n glua-webhook
-
-# Check API server can reach webhook
-kubectl get endpoints -n glua-webhook
-```
-
-### Script Execution Errors
-
-```bash
-# View webhook logs
-kubectl logs -n glua-webhook deployment/glua-webhook -f
-
-# Test script locally
-make test-scripts
-
-# Validate ConfigMap exists and has script.lua key
-kubectl get cm my-script -n default -o yaml
-```
-
-### TLS/Certificate Issues
-
-```bash
-# Check certificate secret exists
-kubectl get secret glua-webhook-certs -n glua-webhook
-
-# Verify certificate validity
-kubectl get secret glua-webhook-certs -n glua-webhook \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout
-
-# Check certificate SANs match service name
-kubectl get secret glua-webhook-certs -n glua-webhook \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout | grep DNS
-```
-
-### ConfigMap Not Found
-
-```bash
-# Check ConfigMap exists
-kubectl get cm my-script -n default
-
-# Verify annotation format (must be namespace/name)
-# WRONG: glua.maurice.fr/scripts: "my-script"
-# CORRECT: glua.maurice.fr/scripts: "default/my-script"
-
-# Check RBAC permissions
-kubectl auth can-i get configmaps --as=system:serviceaccount:glua-webhook:glua-webhook -n default
-```
-
-### Performance Issues
-
-```bash
-# Check webhook logs for timing
-kubectl logs -n glua-webhook deployment/glua-webhook | grep "completed in"
-
-# Identify slow scripts
-kubectl logs -n glua-webhook deployment/glua-webhook | grep "ms$" | sort -t':' -k5 -n
-
-# Monitor webhook latency
-kubectl get --raw /metrics | grep webhook_admission_duration
-```
+---
 
 ## Documentation
 
-### Getting Started
+- **[Installation Guide](docs/getting-started/installation.md)** - Detailed install steps
+- **[Writing Scripts](docs/guides/writing-scripts.md)** - Complete Lua guide
+- **[Example Scripts](examples/scripts/README.md)** - Tested examples with explanations
+- **[Type Stubs](docs/guides/type-stubs.md)** - IDE autocompletion for K8s types
+- **[Label Propagation Guide](docs/guides/deployment-label-propagation.md)** - Step-by-step tutorial
+- **[Annotations Reference](docs/reference/annotations.md)** - Complete API docs
 
-- **[Installation Guide](docs/getting-started/installation.md)** - Detailed installation steps
-- **[Deployment Label Propagation Guide](docs/guides/deployment-label-propagation.md)** - Step-by-step: Propagate labels from Deployments to Pods with automatic modification
-
-### Writing Scripts
-
-- **[Writing Lua Scripts](docs/guides/writing-scripts.md)** - Comprehensive scripting guide
-- **[Type Stubs & IDE Setup](docs/guides/type-stubs.md)** - Enable autocompletion for K8s types
-- **[Examples](examples/)** - Real, tested example scripts
-
-### Reference
-
-- **[Annotations Reference](docs/reference/annotations.md)** - Complete annotation documentation
-
-## Contributing
-
-Contributions are welcome!
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Write tests: Coverage must be >70%
-4. Run tests: `make test` (runs unit + integration tests)
-5. Format code: `make fmt`
-6. Lint: `make lint`
-7. Commit: `git commit -m 'Add amazing feature'`
-8. Push: `git push origin feature/amazing-feature`
-9. Open a Pull Request
-
-### Development Guidelines
-
-See [CLAUDE.md](CLAUDE.md) for complete development workflow.
-
-**Key requirements:**
-
-- **Always run `make` before committing** - runs all tests + builds
-- Test coverage must be >70% for new code
-- Update documentation when adding features
-- Follow Go standard comment style: `// FunctionName: description`
-- Use `make act-test-unit` to test GitHub Actions locally
+---
 
 ## FAQ
 
-**Q: Why Lua instead of another language?**
-A: Lua is lightweight (gopher-lua is pure Go, no cgo), fast, and designed for embedded scripting. The glua library provides native Kubernetes type conversion and module ecosystem.
-
-**Q: Can scripts access the Kubernetes API directly?**
-A: No. Scripts receive the resource being admitted as input. They can make HTTP requests to the API server if needed, but there's no direct client-go access.
-
-**Q: What happens if a script fails?**
-A: By default (`failurePolicy: Ignore`), the admission is allowed and the error is logged. For validation webhooks, set `failurePolicy: Fail` to reject the resource.
-
-**Q: Can I use external Lua libraries?**
-A: Yes, but only pure Lua libraries (no C bindings). Include them directly in your ConfigMap script.
+**Q: Why Lua?**
+A: Lightweight, fast, designed for embedding. gopher-lua is pure Go with no cgo dependencies.
 
 **Q: How do I debug scripts?**
-A: Use `require("log")` for logging to webhook logs, `require("spew")` for debug printing, or `kubectl apply --dry-run=server -o yaml` to see mutations without creating resources.
+A: Test locally with `glua-webhook exec` command, use `log.info()` for logging, or `kubectl apply --dry-run=server`.
 
-**Q: Is this production-ready?**
-A: Test coverage is >70%, integration tests pass, and the webhook is based on the stable glua library. However, review scripts carefully and test thoroughly before production use.
+**Q: Can scripts access Kubernetes API?**
+A: Not directly. Scripts can make HTTP requests to the API server if needed.
+
+**Q: What if a script fails?**
+A: By default the admission is allowed and error logged. Set `failurePolicy: Fail` for critical validations.
 
 **Q: How do I update a script?**
-A: Just edit the ConfigMap. Changes take effect immediately (Kubernetes client caches ConfigMaps for ~1 minute by default).
+A: Just edit the ConfigMap - changes apply immediately (K8s caches for ~1 minute).
 
-**Q: Can scripts modify resources outside the admission request?**
-A: No. Scripts can only modify the `object` global (the resource being admitted). They can make HTTP requests to fetch data, but can't directly mutate other resources.
+**Q: Is this production-ready?**
+A: Test coverage >70%, integration tests pass. Review scripts carefully before production.
+
+---
 
 ## License
 
 [Specify your license]
 
-## Acknowledgments
-
-- [glua](https://github.com/thomas-maurice/glua) - Kubernetes-aware Lua library with type system
-- [gopher-lua](https://github.com/yuin/gopher-lua) - Pure Go Lua 5.1 VM
-
 ## Support
 
 - **Issues:** [GitHub Issues](https://github.com/thomas-maurice/glua-webhook/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/thomas-maurice/glua-webhook/discussions)
-- **Documentation:** [docs/](docs/)
+- **Docs:** [Documentation](docs/)
+
+## Acknowledgments
+
+- [glua](https://github.com/thomas-maurice/glua) - Kubernetes-aware Lua library
+- [gopher-lua](https://github.com/yuin/gopher-lua) - Pure Go Lua VM

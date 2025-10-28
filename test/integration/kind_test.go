@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"testing"
@@ -47,7 +46,7 @@ func TestKindIntegration(t *testing.T) {
 	defer func() {
 		t.Logf("Deleting Kind cluster: %s", clusterName)
 		deleteCmd := exec.Command("kind", "delete", "cluster", "--name", clusterName)
-		deleteCmd.Run()
+		_ = deleteCmd.Run()
 	}()
 
 	// Get kubeconfig
@@ -56,7 +55,9 @@ func TestKindIntegration(t *testing.T) {
 	if err := exportCmd.Run(); err != nil {
 		t.Fatalf("Failed to export kubeconfig: %v", err)
 	}
-	defer os.Remove(kubeconfigPath)
+	defer func() {
+		_ = os.Remove(kubeconfigPath)
+	}()
 
 	// Create K8s client
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
@@ -204,14 +205,4 @@ func TestWebhookEndToEnd(t *testing.T) {
 
 	t.Log("E2E webhook test - requires manual setup")
 	t.Skip("Skipping - requires deployed webhook")
-}
-
-// Helper function to pretty print JSON
-func prettyJSON(t *testing.T, v interface{}) string {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		t.Logf("Failed to marshal JSON: %v", err)
-		return ""
-	}
-	return string(b)
 }

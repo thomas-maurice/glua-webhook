@@ -41,12 +41,12 @@ jobs:
 
     - name: Check binary exists
       run: |
-        ls -lh bin/webhook
-        file bin/webhook
+        ls -lh bin/glua-webhook
+        file bin/glua-webhook
 
     - name: Upload binary artifact
       uses: actions/upload-artifact@v4
       with:
-        name: webhook-binary
-        path: bin/webhook
+        name: glua-webhook-binary
+        path: bin/glua-webhook
         retention-days: 7
