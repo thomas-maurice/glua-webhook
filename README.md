@@ -72,7 +72,7 @@ spec:
 1. **Clone and deploy**
 
 ```bash
-git clone https://github.com/yourusername/glua-webhook
+git clone https://github.com/thomas-maurice/glua-webhook
 cd glua-webhook
 
 # Create Kind cluster and deploy everything
@@ -558,5 +558,5 @@ annotations:
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/glua-webhook/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/glua-webhook/discussions)
+- **Issues**: [GitHub Issues](https://github.com/thomas-maurice/glua-webhook/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/thomas-maurice/glua-webhook/discussions)
