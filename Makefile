@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := test
 
 # Variables
-BINARY_NAME=webhook
+BINARY_NAME=glua-runner
 DOCKER_IMAGE=glua-webhook
 DOCKER_TAG=latest
 KIND_CLUSTER_NAME=glua-webhook-test
@@ -31,9 +31,9 @@ test-integration: ## Run Kind-based integration tests
 
 test-all: test test-integration ## Run all tests including integration tests
 
-build: ## Build the webhook binary
-	@echo "Building webhook binary..."
-	go build -o bin/$(BINARY_NAME) ./cmd/webhook
+build: ## Build the glua-runner binary
+	@echo "Building glua-runner binary..."
+	go build -o bin/$(BINARY_NAME) ./cmd/glua-runner
 
 clean: ## Remove build artifacts
 	@echo "Cleaning build artifacts..."

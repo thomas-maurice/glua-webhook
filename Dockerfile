@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -15,7 +15,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o webhook ./cmd/webhook
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o glua-runner ./cmd/glua-runner
 
 # Runtime stage
 FROM alpine:latest
@@ -31,7 +31,7 @@ RUN addgroup -g 1000 webhook && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /build/webhook /app/webhook
+COPY --from=builder /build/glua-runner /app/glua-runner
 
 # Set ownership
 RUN chown -R webhook:webhook /app
@@ -43,4 +43,4 @@ USER webhook
 EXPOSE 8443
 
 # Run the webhook
-ENTRYPOINT ["/app/webhook"]
+ENTRYPOINT ["/app/glua-runner", "webhook"]
