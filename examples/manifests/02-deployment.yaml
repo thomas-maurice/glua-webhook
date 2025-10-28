@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glua-webhook
+  namespace: glua-webhook
+  labels:
+    app: glua-webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: glua-webhook
+  template:
+    metadata:
+      labels:
+        app: glua-webhook
+    spec:
+      serviceAccountName: glua-webhook
+      containers:
+      - name: webhook
+        image: glua-webhook:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8443
+          name: webhook
+          protocol: TCP
+        env:
+        - name: TLS_CERT_FILE
+          value: /etc/webhook/certs/tls.crt
+        - name: TLS_KEY_FILE
+          value: /etc/webhook/certs/tls.key
+        volumeMounts:
+        - name: webhook-certs
+          mountPath: /etc/webhook/certs
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: webhook-certs
+        secret:
+          secretName: glua-webhook-certs

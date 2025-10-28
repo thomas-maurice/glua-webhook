@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+  namespace: default
+  annotations:
+    # Reference ConfigMaps containing Lua scripts
+    # Scripts are executed in alphabetical order
+    glua.maurice.fr/scripts: "default/add-label-script,default/inject-sidecar-script"
+  labels:
+    app: example
+    env: production
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    ports:
+    - containerPort: 80

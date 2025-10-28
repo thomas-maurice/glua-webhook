@@ -1,0 +1,92 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: add-label-script
+  namespace: default
+data:
+  script.lua: |
+    -- Add processing label
+    if object.metadata == nil then
+      object.metadata = {}
+    end
+    if object.metadata.labels == nil then
+      object.metadata.labels = {}
+    end
+    object.metadata.labels["glua.maurice.fr/processed"] = "true"
+    object.metadata.labels["glua.maurice.fr/timestamp"] = os.date("%Y-%m-%dT%H:%M:%SZ")
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inject-sidecar-script
+  namespace: default
+data:
+  script.lua: |
+    -- Inject logging sidecar into Pods
+    if object.kind ~= "Pod" then
+      return
+    end
+
+    if object.spec == nil then
+      object.spec = {}
+    end
+    if object.spec.containers == nil then
+      object.spec.containers = {}
+    end
+
+    -- Check if sidecar already exists
+    local has_sidecar = false
+    for i = 1, #object.spec.containers do
+      if object.spec.containers[i].name == "log-collector" then
+        has_sidecar = true
+        break
+      end
+    end
+
+    if not has_sidecar then
+      table.insert(object.spec.containers, {
+        name = "log-collector",
+        image = "fluent/fluent-bit:latest",
+        volumeMounts = {
+          {
+            name = "varlog",
+            mountPath = "/var/log",
+            readOnly = true
+          }
+        }
+      })
+
+      if object.spec.volumes == nil then
+        object.spec.volumes = {}
+      end
+
+      table.insert(object.spec.volumes, {
+        name = "varlog",
+        hostPath = {
+          path = "/var/log"
+        }
+      })
+    end
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: validate-labels-script
+  namespace: default
+data:
+  script.lua: |
+    -- Validate required labels
+    local required_labels = {"app", "env"}
+
+    if object.metadata == nil or object.metadata.labels == nil then
+      error("Resource must have labels")
+    end
+
+    for _, label in ipairs(required_labels) do
+      if object.metadata.labels[label] == nil or object.metadata.labels[label] == "" then
+        error("Required label '" .. label .. "' is missing")
+      end
+    end

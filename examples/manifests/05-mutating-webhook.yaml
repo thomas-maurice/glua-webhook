@@ -1,0 +1,24 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: glua-mutating-webhook
+webhooks:
+- name: mutate.glua.maurice.fr
+  clientConfig:
+    service:
+      name: glua-webhook
+      namespace: glua-webhook
+      path: "/mutate"
+    caBundle: "" # Set this during installation
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: ["*"]
+    apiVersions: ["*"]
+    resources: ["*"]
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  timeoutSeconds: 10
+  failurePolicy: Ignore # Ignore failures as per requirements
+  namespaceSelector:
+    matchLabels:
+      glua.maurice.fr/enabled: "true"

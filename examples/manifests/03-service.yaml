@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: glua-webhook
+  namespace: glua-webhook
+  labels:
+    app: glua-webhook
+spec:
+  ports:
+  - port: 443
+    targetPort: 8443
+    protocol: TCP
+    name: webhook
+  selector:
+    app: glua-webhook
+  type: ClusterIP
