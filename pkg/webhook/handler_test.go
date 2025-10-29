@@ -205,7 +205,7 @@ func TestServeHTTP_WithScripts_Mutating(t *testing.T) {
 	}
 
 	if response.Response.PatchType == nil || *response.Response.PatchType != admissionv1.PatchTypeJSONPatch {
-		t.Error("Expected JSONPatch type")
+		t.Errorf("Expected JSONPatch type, got: %v", response.Response.PatchType)
 	}
 }
 
@@ -412,10 +412,25 @@ func TestCreateJSONPatch(t *testing.T) {
 		t.Error("Expected non-nil patch")
 	}
 
-	// Verify patch is valid JSON
-	var patchObj []map[string]interface{}
-	if err := json.Unmarshal(patch, &patchObj); err != nil {
+	// Verify patch is valid JSON (JSON Patch is an array of operations)
+	var patchOps []map[string]interface{}
+	if err := json.Unmarshal(patch, &patchOps); err != nil {
 		t.Fatalf("Patch is not valid JSON: %v", err)
+	}
+
+	// JSON Patch should be an array with operations
+	if len(patchOps) == 0 {
+		t.Error("Expected patch to have operations")
+	}
+
+	// Each operation should have at least "op" and "path" fields
+	for _, op := range patchOps {
+		if _, ok := op["op"]; !ok {
+			t.Error("Expected operation to have 'op' field")
+		}
+		if _, ok := op["path"]; !ok {
+			t.Error("Expected operation to have 'path' field")
+		}
 	}
 }
 

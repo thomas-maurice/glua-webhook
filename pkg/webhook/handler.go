@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/mattbaird/jsonpatch"
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -142,13 +143,13 @@ func (h *WebhookHandler) handleAdmissionRequest(ctx context.Context, req *admiss
 
 	// Check if the object was modified
 	if string(modifiedJSON) != string(req.Object.Raw) {
-		h.logger.Printf("Object was modified by scripts, creating JSON patch")
+		h.logger.Printf("Object was modified by scripts, creating JSON merge patch")
 
-		// Create a JSON patch
+		// Create a JSON Patch (RFC 6902) using the json-patch library
 		patchType := admissionv1.PatchTypeJSONPatch
 		response.PatchType = &patchType
 
-		// Generate JSON patch
+		// Generate JSON Patch
 		patch, err := createJSONPatch(req.Object.Raw, modifiedJSON)
 		if err != nil {
 			h.logger.Printf("ERROR: Failed to create JSON patch: %v", err)
@@ -160,7 +161,7 @@ func (h *WebhookHandler) handleAdmissionRequest(ctx context.Context, req *admiss
 		}
 
 		response.Patch = patch
-		h.logger.Printf("Applied patch of length %d bytes", len(patch))
+		h.logger.Printf("Applied JSON patch of length %d bytes", len(patch))
 	} else {
 		h.logger.Printf("Object was not modified by scripts")
 	}
@@ -168,29 +169,19 @@ func (h *WebhookHandler) handleAdmissionRequest(ctx context.Context, req *admiss
 	return response
 }
 
-// createJSONPatch: creates a JSON patch between original and modified objects
+// createJSONPatch: creates a JSON patch between original and modified objects using RFC 6902
 func createJSONPatch(original, modified []byte) ([]byte, error) {
-	// For simplicity, we'll use a replace operation on the entire object
-	// A more sophisticated implementation could use a proper JSON patch library
-	var originalObj, modifiedObj interface{}
-
-	if err := json.Unmarshal(original, &originalObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal original: %w", err)
+	// Use the mattbaird/jsonpatch library to create a proper RFC 6902 JSON Patch
+	patch, err := jsonpatch.CreatePatch(original, modified)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JSON patch: %w", err)
 	}
 
-	if err := json.Unmarshal(modified, &modifiedObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal modified: %w", err)
+	// Marshal the patch to JSON
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal JSON patch: %w", err)
 	}
 
-	// Create a simple patch that replaces specific fields
-	// This is a simplified approach - in production you'd want to use a proper JSON patch library
-	patch := []map[string]interface{}{
-		{
-			"op":    "replace",
-			"path":  "/",
-			"value": modifiedObj,
-		},
-	}
-
-	return json.Marshal(patch)
+	return patchBytes, nil
 }
